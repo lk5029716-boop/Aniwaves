@@ -259,9 +259,10 @@ router.get("/proxy", async (req, res): Promise<void> => {
     res.setHeader("Access-Control-Allow-Origin", "*");
     res.setHeader("Access-Control-Allow-Headers", "*");
 
-    if (isM3u8) {
-      const text      = await upstream.text();
-      const rewritten = rewriteM3u8(text, targetUrl, req);
+if (isM3u8) {
+  const text      = await upstream.text();
+  const finalUrl  = new URL(upstream.url || raw);
+  const rewritten = rewriteM3u8(text, finalUrl, req);
       res.setHeader("Content-Type", "application/vnd.apple.mpegurl");
       res.send(rewritten);
     } else {
