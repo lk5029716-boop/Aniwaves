@@ -1,4 +1,5 @@
 import { Router, type IRouter } from "express";
+import type { Request } from "express";
 import {
   searchAnime,
   getAnimeDetails,
@@ -7,6 +8,42 @@ import {
   getEmbedUrl,
 } from "../lib/anime/scraper.js";
 import { extractStream } from "../lib/anime/providers/index.js";
+
+// ─── M3U8 rewriter ────────────────────────────────────────────────────────────
+// Resolves relative URLs against the playlist's own URL, then wraps every
+// segment / sub-manifest / key URI so it goes back through /api/proxy.
+function resolveUrl(href: string, base: URL): string {
+  if (/^https?:\/\//i.test(href)) return href;
+  return new URL(href, base).toString();
+}
+
+function rewriteM3u8(text: string, baseUrl: URL, req: Request): string {
+  const scheme = req.headers["x-forwarded-proto"] ?? req.protocol;
+  const host   = req.headers["x-forwarded-host"]  ?? req.get("host");
+  const proxyBase = `${scheme}://${host}/api/proxy?url=`;
+
+  return text
+    .split("\n")
+    .map((line) => {
+      const t = line.trim();
+
+      // Rewrite URI="..." inside EXT-X-KEY and EXT-X-MAP tags
+      if (t.startsWith("#EXT-X-KEY") || t.startsWith("#EXT-X-MAP")) {
+        return t.replace(/URI="([^"]+)"/g, (_, uri: string) => {
+          const abs = resolveUrl(uri, baseUrl);
+          return `URI="${proxyBase}${encodeURIComponent(abs)}"`;
+        });
+      }
+
+      // Skip blank lines and all other # directives
+      if (!t || t.startsWith("#")) return line;
+
+      // This is a bare URL line (variant playlist or media segment)
+      const abs = resolveUrl(t, baseUrl);
+      return `${proxyBase}${encodeURIComponent(abs)}`;
+    })
+    .join("\n");
+}
 
 const router: IRouter = Router();
 
@@ -172,6 +209,74 @@ router.get("/stream", async (req, res): Promise<void> => {
   }
 
   res.json(stream);
+});
+
+// ─── Stream proxy ─────────────────────────────────────────────────────────────
+// GET /api/proxy?url=<encoded-url>
+//
+// Fetches the upstream resource with the Referer / Origin headers that the
+// echovideo CDN requires.  For m3u8 playlists every internal URI is rewritten
+// so subsequent sub-manifest and segment requests also come through this proxy.
+router.get("/proxy", async (req, res): Promise<void> => {
+  const raw = Array.isArray(req.query["url"])
+    ? req.query["url"][0]
+    : req.query["url"];
+
+  if (!raw || typeof raw !== "string") {
+    res.status(400).json({ error: "Missing query param: url" });
+    return;
+  }
+
+  let targetUrl: URL;
+  try {
+    targetUrl = new URL(raw);
+  } catch {
+    res.status(400).json({ error: "Invalid URL" });
+    return;
+  }
+
+  try {
+    const upstream = await fetch(targetUrl.toString(), {
+      headers: {
+        "Referer":    "https://play.echovideo.ru/",
+        "Origin":     "https://play.echovideo.ru",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+      },
+    });
+
+    if (!upstream.ok) {
+      res.status(upstream.status).send(`Upstream error ${upstream.status}`);
+      return;
+    }
+
+    const contentType  = upstream.headers.get("content-type") ?? "";
+    const isM3u8 =
+      contentType.includes("mpegurl") ||
+      raw.includes(".m3u8") ||
+      raw.includes("m3u8");
+
+    // Pass CORS headers so hls.js (running in the browser) can load the response
+    res.setHeader("Access-Control-Allow-Origin", "*");
+    res.setHeader("Access-Control-Allow-Headers", "*");
+
+    if (isM3u8) {
+      const text      = await upstream.text();
+      const rewritten = rewriteM3u8(text, targetUrl, req);
+      res.setHeader("Content-Type", "application/vnd.apple.mpegurl");
+      res.send(rewritten);
+    } else {
+      // Binary pass-through — .ts segments, AES-128 key files, etc.
+      res.setHeader(
+        "Content-Type",
+        contentType || "application/octet-stream"
+      );
+      const buf = await upstream.arrayBuffer();
+      res.send(Buffer.from(buf));
+    }
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    res.status(502).json({ error: `Proxy fetch failed: ${msg}` });
+  }
 });
 
 export default router;
