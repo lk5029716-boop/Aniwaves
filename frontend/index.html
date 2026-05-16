@@ -982,7 +982,7 @@ async function loadStream(serverName) {
     // All m3u8 requests (manifest + segments + keys) go through the backend proxy
     // so the CDN's Referer requirement is satisfied server-side.
     
-const proxiedM3u8 = `${API_BASE}/proxy?url=${encodeURIComponent(stream.m3u8)}`;
+const proxiedM3u8 = `${API_BASE}/api/proxy?url=${encodeURIComponent(stream.m3u8)}`;
     if (Hls.isSupported()) {
       const hls = new Hls();
       hls.loadSource(proxiedM3u8);
