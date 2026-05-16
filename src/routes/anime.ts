@@ -280,18 +280,21 @@ if (isM3u8) {
   }
 });
 
-// ... existing proxy route above ...
-
 router.get("/debug-embed", async (req, res): Promise<void> => {
-  const url = "https://weneverbeenfree.com/e/gy4is9fovon8?v=1&asi=0&autoPlay=0&ao=0";
-  const resp = await fetch(url, {
-    headers: {
-      "Referer": "https://aniwaves.ru/",
-      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-    }
-  });
-  const text = await resp.text();
-  res.send(text);
+  try {
+    const url = "https://weneverbeenfree.com/e/gy4is9fovon8?v=1&asi=0&autoPlay=0&ao=0";
+    const resp = await fetch(url, {
+      headers: {
+        "Referer": "https://aniwaves.ru/",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+      }
+    });
+    const text = await resp.text();
+    res.json({ status: resp.status, length: text.length, snippet: text.slice(0, 2000) });
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    res.status(502).json({ error: msg });
+  }
 });
 
 export default router;
